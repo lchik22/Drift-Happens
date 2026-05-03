@@ -33,5 +33,44 @@ services:
       retries: 5
     restart: unless-stopped
 
+  api:
+    build:
+      context: ./server
+    image: drift-server:local
+    container_name: drift-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      API_PORT: 3000
+      DATABASE_URL: postgres://drift:drift@postgres:5432/drift
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+    ports:
+      - "3000:3000"
+    command: ["node", "dist/apps/api/main.js"]
+    init: true
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./server
+    image: drift-server:local
+    container_name: drift-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      api:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgres://drift:drift@postgres:5432/drift
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+    command: ["node", "dist/apps/worker/main.js"]
+    init: true
+    restart: unless-stopped
+
 volumes:
   pgdata:
