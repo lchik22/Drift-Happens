@@ -1,1 +1,20 @@
 CLAUDE.md
+
+docs/
+node_modules/
+
+# Build output
+dist/
+
+# Env files (commit only .env.example)
+.env
+.env.*.local
+
+# Logs / coverage / IDE
+*.log
+coverage/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
