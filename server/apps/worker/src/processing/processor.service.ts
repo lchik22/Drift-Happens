@@ -1,12 +1,11 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
-import { ClientProxy } from '@nestjs/microservices';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import {
   chunks,
+  DeltaBroadcasterService,
   DeltaCalculatorService,
   PATTERN_SEGMENT_DELTA,
-  RMQ_DELTA_PUBLISHER,
   Segment,
   SegmentEvaluatorService,
 } from '@drift/shared';
@@ -24,7 +23,7 @@ export class ProcessorService {
     @InjectRepository(Segment) private readonly segments: Repository<Segment>,
     private readonly evaluator: SegmentEvaluatorService,
     private readonly deltaCalc: DeltaCalculatorService,
-    @Inject(RMQ_DELTA_PUBLISHER) private readonly client: ClientProxy,
+    private readonly broadcaster: DeltaBroadcasterService,
   ) {}
 
   async runEvaluationPass(): Promise<void> {
@@ -77,9 +76,9 @@ export class ProcessorService {
         return 'noop';
       }
       const event: SegmentDeltaEvent = { ...result.event, cascadeDepth };
-      this.client.emit(PATTERN_SEGMENT_DELTA, event);
+      this.broadcaster.broadcast(event);
       this.logger.log(
-        `emitted ${PATTERN_SEGMENT_DELTA} for ${segment.name} (+${result.added.length}/-${result.removed.length}, depth=${cascadeDepth})`,
+        `broadcast ${PATTERN_SEGMENT_DELTA} for ${segment.name} (+${result.added.length}/-${result.removed.length}, depth=${cascadeDepth})`,
       );
       return 'emitted';
     } catch (err) {

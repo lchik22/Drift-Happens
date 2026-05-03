@@ -1,19 +1,19 @@
 import {
+  BadRequestException,
   ConflictException,
-  Inject,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { ClientProxy } from '@nestjs/microservices';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import {
-  PATTERN_SEGMENT_DELTA,
+  DeltaBroadcasterService,
+  extractSegmentRefs,
   RefreshResult,
-  RMQ_DELTA_PUBLISHER,
   Segment,
   SegmentDeltaEvent,
+  SegmentDependency,
   SegmentEvaluatorService,
 } from '@drift/shared';
 import { CreateSegmentDto } from './dto/create-segment.dto';
@@ -24,8 +24,9 @@ export class SegmentsService {
 
   constructor(
     @InjectRepository(Segment) private readonly segments: Repository<Segment>,
+    @InjectDataSource() private readonly dataSource: DataSource,
     private readonly evaluator: SegmentEvaluatorService,
-    @Inject(RMQ_DELTA_PUBLISHER) private readonly deltaPublisher: ClientProxy,
+    private readonly broadcaster: DeltaBroadcasterService,
   ) {}
 
   findAll(): Promise<Segment[]> {
@@ -45,13 +46,44 @@ export class SegmentsService {
     if (existing) {
       throw new ConflictException(`Segment with name '${dto.name}' already exists`);
     }
-    const segment = this.segments.create({
-      name: dto.name,
-      description: dto.description ?? null,
-      rules: dto.rules,
-      isStatic: dto.isStatic ?? false,
+
+    const parentIds = extractSegmentRefs(dto.rules);
+
+    return this.dataSource.transaction(async (mgr) => {
+      if (parentIds.length > 0) {
+        await this.assertParentsExist(mgr, parentIds);
+      }
+
+      const segment = await mgr.save(
+        mgr.create(Segment, {
+          name: dto.name,
+          description: dto.description ?? null,
+          rules: dto.rules,
+          isStatic: dto.isStatic ?? false,
+        }),
+      );
+
+      if (parentIds.length === 0) {
+        return segment;
+      }
+
+      if (parentIds.includes(segment.id)) {
+        throw new BadRequestException(
+          `Segment '${segment.name}' references itself in its rules`,
+        );
+      }
+      await this.assertNoCycle(mgr, segment.id, parentIds);
+
+      await mgr.save(
+        parentIds.map((parentId) =>
+          mgr.create(SegmentDependency, { parentId, childId: segment.id }),
+        ),
+      );
+      this.logger.log(
+        `segment ${segment.name}: registered ${parentIds.length} parent dependency(ies)`,
+      );
+      return segment;
     });
-    return this.segments.save(segment);
   }
 
   async refresh(id: string): Promise<RefreshResult> {
@@ -72,10 +104,51 @@ export class SegmentsService {
       computedAt: result.evaluatedAt.toISOString(),
       cascadeDepth: 0,
     };
-    this.deltaPublisher.emit(PATTERN_SEGMENT_DELTA, event);
+    this.broadcaster.broadcast(event);
     this.logger.log(
-      `manual refresh of ${segment.name} (${segment.isStatic ? 'static' : 'dynamic'}): emitted delta (+${result.added.length}/-${result.removed.length})`,
+      `manual refresh of ${segment.name} (${segment.isStatic ? 'static' : 'dynamic'}): broadcast delta (+${result.added.length}/-${result.removed.length})`,
     );
     return result;
+  }
+
+  private async assertParentsExist(mgr: EntityManager, parentIds: string[]): Promise<void> {
+    const found = await mgr.find(Segment, {
+      where: { id: In(parentIds) },
+      select: { id: true },
+    });
+    if (found.length === parentIds.length) return;
+    const missing = parentIds.filter((id) => !found.some((s) => s.id === id));
+    throw new BadRequestException(
+      `Referenced segment(s) do not exist: ${missing.join(', ')}`,
+    );
+  }
+
+  private async assertNoCycle(
+    mgr: EntityManager,
+    targetId: string,
+    parentIds: string[],
+  ): Promise<void> {
+    const parentSet = new Set(parentIds);
+    const visited = new Set<string>();
+    const stack: string[] = [targetId];
+
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (visited.has(current)) continue;
+      visited.add(current);
+
+      const children = await mgr.find(SegmentDependency, {
+        where: { parentId: current },
+        select: { childId: true },
+      });
+      for (const c of children) {
+        if (parentSet.has(c.childId)) {
+          throw new BadRequestException(
+            `Cycle detected: segment ${targetId} cannot depend on ${c.childId} (already reachable from ${targetId} via the dependency graph)`,
+          );
+        }
+        stack.push(c.childId);
+      }
+    }
   }
 }

@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ALL_ENTITIES } from '@drift/shared';
 import { ApiController } from './api.controller';
 import { CustomersModule } from './customers/customers.module';
+import { RealtimeModule } from './realtime/realtime.module';
 import { SegmentsModule } from './segments/segments.module';
 import { SimulationModule } from './simulation/simulation.module';
 
@@ -27,6 +28,7 @@ import { SimulationModule } from './simulation/simulation.module';
     CustomersModule,
     SegmentsModule,
     SimulationModule,
+    RealtimeModule,
   ],
   controllers: [ApiController],
 })
