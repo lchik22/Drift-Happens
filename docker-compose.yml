@@ -72,5 +72,18 @@ services:
     init: true
     restart: unless-stopped
 
+  client:
+    build:
+      context: ./client
+    image: drift-client:local
+    container_name: drift-client
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - "4200:4200"
+    init: true
+    restart: unless-stopped
+
 volumes:
   pgdata:
