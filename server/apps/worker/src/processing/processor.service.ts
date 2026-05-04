@@ -69,8 +69,8 @@ export class ProcessorService {
     cascadeDepth: number,
   ): Promise<'emitted' | 'noop' | 'error'> {
     try {
-      const memberIds = await this.evaluator.evaluate(segment);
-      const result = await this.deltaCalc.computeAndPersist(segment, memberIds);
+      const predicate = this.evaluator.compile(segment);
+      const result = await this.deltaCalc.computeAndPersist(segment, predicate);
       if (result.wasNoOp || !result.event) {
         return 'noop';
       }

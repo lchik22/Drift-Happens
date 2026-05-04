@@ -5,8 +5,10 @@ import { DeltaRecord } from '../entities/delta-record.entity';
 import { MembershipSnapshot } from '../entities/membership-snapshot.entity';
 import type { Segment } from '../entities/segment.entity';
 import type { SegmentDeltaEvent } from '../messaging/events';
+import type { CompiledPredicate } from './rule-compiler';
 
 export interface DeltaResult {
+  members: string[];
   added: string[];
   removed: string[];
   wasNoOp: boolean;
@@ -14,6 +16,12 @@ export interface DeltaResult {
   deltaId: string | null;
   computedAt: Date;
   event: SegmentDeltaEvent | null;
+}
+
+interface DiffRow {
+  members: string[] | null;
+  added: string[] | null;
+  removed: string[] | null;
 }
 
 @Injectable()
@@ -24,26 +32,58 @@ export class DeltaCalculatorService {
     @InjectDataSource() private readonly dataSource: DataSource,
     @InjectRepository(MembershipSnapshot)
     private readonly snapshots: Repository<MembershipSnapshot>,
-    @InjectRepository(DeltaRecord)
-    private readonly deltas: Repository<DeltaRecord>,
   ) {}
 
-  async computeAndPersist(segment: Segment, newMemberIds: string[]): Promise<DeltaResult> {
-    const previous = await this.snapshots.findOne({
-      where: { segmentId: segment.id },
-      order: { evaluatedAt: 'DESC' },
-    });
-    const previousIds = previous?.customerIds ?? [];
-
-    const oldSet = new Set(previousIds);
-    const newSet = new Set(newMemberIds);
-    const added = newMemberIds.filter((id) => !oldSet.has(id));
-    const removed = previousIds.filter((id) => !newSet.has(id));
+  async computeAndPersist(segment: Segment, predicate: CompiledPredicate): Promise<DeltaResult> {
+    const segmentIdParam = `$${predicate.params.length + 1}`;
+    const sql = `
+      WITH new_members AS (
+        SELECT c.id FROM customers c WHERE ${predicate.sql}
+      ),
+      prev_ids AS (
+        SELECT unnest(
+          COALESCE(
+            (SELECT customer_ids
+               FROM membership_snapshots
+              WHERE segment_id = ${segmentIdParam}
+              ORDER BY evaluated_at DESC
+              LIMIT 1),
+            '{}'::uuid[]
+          )
+        ) AS id
+      ),
+      added_set AS (
+        SELECT id FROM new_members
+        EXCEPT
+        SELECT id FROM prev_ids
+      ),
+      removed_set AS (
+        SELECT id FROM prev_ids
+        EXCEPT
+        SELECT id FROM new_members
+      )
+      SELECT
+        COALESCE((SELECT array_agg(id ORDER BY id) FROM new_members), '{}'::uuid[]) AS members,
+        COALESCE((SELECT array_agg(id ORDER BY id) FROM added_set),  '{}'::uuid[]) AS added,
+        COALESCE((SELECT array_agg(id ORDER BY id) FROM removed_set), '{}'::uuid[]) AS removed
+    `;
+    const params = [...predicate.params, segment.id];
+    const rows: DiffRow[] = await this.dataSource.query(sql, params);
+    const row = rows[0];
+    const members = row?.members ?? [];
+    const added = row?.added ?? [];
+    const removed = row?.removed ?? [];
     const now = new Date();
 
     if (added.length === 0 && removed.length === 0) {
-      this.logger.log(`segment ${segment.name}: no-op (members unchanged, count=${newMemberIds.length})`);
+      const previous = await this.snapshots.findOne({
+        where: { segmentId: segment.id },
+        order: { evaluatedAt: 'DESC' },
+        select: { id: true },
+      });
+      this.logger.log(`segment ${segment.name}: no-op (members unchanged, count=${members.length})`);
       return {
+        members,
         added: [],
         removed: [],
         wasNoOp: true,
@@ -57,8 +97,8 @@ export class DeltaCalculatorService {
     const persisted = await this.dataSource.transaction(async (mgr) => {
       const snapshot = mgr.create(MembershipSnapshot, {
         segmentId: segment.id,
-        customerIds: newMemberIds,
-        memberCount: newMemberIds.length,
+        customerIds: members,
+        memberCount: members.length,
         evaluatedAt: now,
       });
       const savedSnapshot = await mgr.save(snapshot);
@@ -81,6 +121,7 @@ export class DeltaCalculatorService {
     );
 
     return {
+      members,
       added,
       removed,
       wasNoOp: false,
