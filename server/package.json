@@ -17,7 +17,7 @@
     "start:worker:prod": "node dist/apps/worker/main",
     "lint": "eslint \"{apps,libs}/**/*.ts\" --fix",
     "test": "jest",
-    "seed": "tsx apps/api/scripts/seed.ts"
+    "seed": "ts-node --project tsconfig.seed.json -r tsconfig-paths/register apps/api/scripts/seed.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
