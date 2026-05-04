@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
 import { DeltaRecord } from '../entities/delta-record.entity';
 import { MembershipSnapshot } from '../entities/membership-snapshot.entity';
 import type { Segment } from '../entities/segment.entity';
@@ -28,73 +28,77 @@ interface DiffRow {
 export class DeltaCalculatorService {
   private readonly logger = new Logger(DeltaCalculatorService.name);
 
-  constructor(
-    @InjectDataSource() private readonly dataSource: DataSource,
-    @InjectRepository(MembershipSnapshot)
-    private readonly snapshots: Repository<MembershipSnapshot>,
-  ) {}
+  constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
 
   async computeAndPersist(segment: Segment, predicate: CompiledPredicate): Promise<DeltaResult> {
-    const segmentIdParam = `$${predicate.params.length + 1}`;
-    const sql = `
-      WITH new_members AS (
-        SELECT c.id FROM customers c WHERE ${predicate.sql}
-      ),
-      prev_ids AS (
-        SELECT unnest(
-          COALESCE(
-            (SELECT customer_ids
-               FROM membership_snapshots
-              WHERE segment_id = ${segmentIdParam}
-              ORDER BY evaluated_at DESC
-              LIMIT 1),
-            '{}'::uuid[]
-          )
-        ) AS id
-      ),
-      added_set AS (
-        SELECT id FROM new_members
-        EXCEPT
-        SELECT id FROM prev_ids
-      ),
-      removed_set AS (
-        SELECT id FROM prev_ids
-        EXCEPT
-        SELECT id FROM new_members
-      )
-      SELECT
-        COALESCE((SELECT array_agg(id ORDER BY id) FROM new_members), '{}'::uuid[]) AS members,
-        COALESCE((SELECT array_agg(id ORDER BY id) FROM added_set),  '{}'::uuid[]) AS added,
-        COALESCE((SELECT array_agg(id ORDER BY id) FROM removed_set), '{}'::uuid[]) AS removed
-    `;
-    const params = [...predicate.params, segment.id];
-    const rows: DiffRow[] = await this.dataSource.query(sql, params);
-    const row = rows[0];
-    const members = row?.members ?? [];
-    const added = row?.added ?? [];
-    const removed = row?.removed ?? [];
-    const now = new Date();
+    return this.dataSource.transaction(async (mgr) => {
+      // Per-segment advisory lock: serializes concurrent evaluations of the same segment
+      // across processes (api manual-refresh racing with worker eval pass, or two
+      // concurrent api refreshes). The lock is held until tx commit/rollback, so the
+      // second waiter reads the snapshot the first writer just persisted and falls
+      // through the no-op short-circuit. hashtextextended yields a stable bigint
+      // from segment.id so different segments don't contend.
+      await mgr.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [segment.id]);
 
-    if (added.length === 0 && removed.length === 0) {
-      const previous = await this.snapshots.findOne({
-        where: { segmentId: segment.id },
-        order: { evaluatedAt: 'DESC' },
-        select: { id: true },
-      });
-      this.logger.log(`segment ${segment.name}: no-op (members unchanged, count=${members.length})`);
-      return {
-        members,
-        added: [],
-        removed: [],
-        wasNoOp: true,
-        snapshotId: previous?.id ?? null,
-        deltaId: null,
-        computedAt: now,
-        event: null,
-      };
-    }
+      const segmentIdParam = `$${predicate.params.length + 1}`;
+      const sql = `
+        WITH new_members AS (
+          SELECT c.id FROM customers c WHERE ${predicate.sql}
+        ),
+        prev_ids AS (
+          SELECT unnest(
+            COALESCE(
+              (SELECT customer_ids
+                 FROM membership_snapshots
+                WHERE segment_id = ${segmentIdParam}
+                ORDER BY evaluated_at DESC
+                LIMIT 1),
+              '{}'::uuid[]
+            )
+          ) AS id
+        ),
+        added_set AS (
+          SELECT id FROM new_members
+          EXCEPT
+          SELECT id FROM prev_ids
+        ),
+        removed_set AS (
+          SELECT id FROM prev_ids
+          EXCEPT
+          SELECT id FROM new_members
+        )
+        SELECT
+          COALESCE((SELECT array_agg(id ORDER BY id) FROM new_members), '{}'::uuid[]) AS members,
+          COALESCE((SELECT array_agg(id ORDER BY id) FROM added_set),  '{}'::uuid[]) AS added,
+          COALESCE((SELECT array_agg(id ORDER BY id) FROM removed_set), '{}'::uuid[]) AS removed
+      `;
+      const params = [...predicate.params, segment.id];
+      const rows: DiffRow[] = await mgr.query(sql, params);
+      const row = rows[0];
+      const members = row?.members ?? [];
+      const added = row?.added ?? [];
+      const removed = row?.removed ?? [];
+      const now = new Date();
 
-    const persisted = await this.dataSource.transaction(async (mgr) => {
+      if (added.length === 0 && removed.length === 0) {
+        const previous = await mgr.findOne(MembershipSnapshot, {
+          where: { segmentId: segment.id },
+          order: { evaluatedAt: 'DESC' },
+          select: { id: true },
+        });
+        this.logger.log(`segment ${segment.name}: no-op (members unchanged, count=${members.length})`);
+        return {
+          members,
+          added: [],
+          removed: [],
+          wasNoOp: true,
+          snapshotId: previous?.id ?? null,
+          deltaId: null,
+          computedAt: now,
+          event: null,
+        };
+      }
+
       const snapshot = mgr.create(MembershipSnapshot, {
         segmentId: segment.id,
         customerIds: members,
@@ -113,27 +117,25 @@ export class DeltaCalculatorService {
       });
       const savedDelta = await mgr.save(delta);
 
-      return { snapshotId: savedSnapshot.id, deltaId: savedDelta.id };
-    });
+      this.logger.log(
+        `segment ${segment.name}: delta +${added.length}/-${removed.length} (snapshot=${savedSnapshot.id.slice(0, 8)}…)`,
+      );
 
-    this.logger.log(
-      `segment ${segment.name}: delta +${added.length}/-${removed.length} (snapshot=${persisted.snapshotId.slice(0, 8)}…)`,
-    );
-
-    return {
-      members,
-      added,
-      removed,
-      wasNoOp: false,
-      snapshotId: persisted.snapshotId,
-      deltaId: persisted.deltaId,
-      computedAt: now,
-      event: {
-        segmentId: segment.id,
+      return {
+        members,
         added,
         removed,
-        computedAt: now.toISOString(),
-      },
-    };
+        wasNoOp: false,
+        snapshotId: savedSnapshot.id,
+        deltaId: savedDelta.id,
+        computedAt: now,
+        event: {
+          segmentId: segment.id,
+          added,
+          removed,
+          computedAt: now.toISOString(),
+        },
+      };
+    });
   }
 }
