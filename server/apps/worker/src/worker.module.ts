@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ALL_ENTITIES } from '@drift/shared';
+import { CampaignModule } from './campaign/campaign.module';
 import { ProcessingModule } from './processing/processing.module';
 import { WorkerController } from './worker.controller';
 
@@ -20,6 +21,7 @@ import { WorkerController } from './worker.controller';
       }),
     }),
     ProcessingModule,
+    CampaignModule,
   ],
   controllers: [WorkerController],
 })

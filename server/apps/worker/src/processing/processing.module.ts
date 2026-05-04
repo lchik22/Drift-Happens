@@ -6,7 +6,9 @@ import {
   DeltaBroadcasterService,
   EvaluationModule,
   QUEUE_DELTA_EVENTS,
+  QUEUE_DELTA_EVENTS_CAMPAIGN,
   QUEUE_DELTA_EVENTS_WS,
+  RMQ_DELTA_CAMPAIGN_PUBLISHER,
   RMQ_DELTA_PUBLISHER,
   RMQ_DELTA_WS_PUBLISHER,
   Segment,
@@ -36,6 +38,7 @@ const rmqClient = (queue: string) => ({
     ClientsModule.registerAsync([
       { name: RMQ_DELTA_PUBLISHER, ...rmqClient(QUEUE_DELTA_EVENTS) },
       { name: RMQ_DELTA_WS_PUBLISHER, ...rmqClient(QUEUE_DELTA_EVENTS_WS) },
+      { name: RMQ_DELTA_CAMPAIGN_PUBLISHER, ...rmqClient(QUEUE_DELTA_EVENTS_CAMPAIGN) },
     ]),
   ],
   controllers: [CascadeController],

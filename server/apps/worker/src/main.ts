@@ -2,7 +2,11 @@ import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { Logger } from '@nestjs/common';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
-import { QUEUE_CHANGE_EVENTS, QUEUE_DELTA_EVENTS } from '@drift/shared';
+import {
+  QUEUE_CHANGE_EVENTS,
+  QUEUE_DELTA_EVENTS,
+  QUEUE_DELTA_EVENTS_CAMPAIGN,
+} from '@drift/shared';
 import { WorkerModule } from './worker.module';
 
 async function bootstrap() {
@@ -23,12 +27,13 @@ async function bootstrap() {
 
   app.connectMicroservice<MicroserviceOptions>(rmqOptions(QUEUE_CHANGE_EVENTS));
   app.connectMicroservice<MicroserviceOptions>(rmqOptions(QUEUE_DELTA_EVENTS));
+  app.connectMicroservice<MicroserviceOptions>(rmqOptions(QUEUE_DELTA_EVENTS_CAMPAIGN));
 
   app.enableShutdownHooks();
   await app.startAllMicroservices();
   await app.init();
   Logger.log(
-    `Worker consuming queues '${QUEUE_CHANGE_EVENTS}' (change events) + '${QUEUE_DELTA_EVENTS}' (cascade)`,
+    `Worker consuming queues '${QUEUE_CHANGE_EVENTS}' (change events) + '${QUEUE_DELTA_EVENTS}' (cascade) + '${QUEUE_DELTA_EVENTS_CAMPAIGN}' (campaign notifications)`,
     'Bootstrap',
   );
 }

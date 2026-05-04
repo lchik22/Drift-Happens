@@ -5,7 +5,6 @@ import {
   chunks,
   DeltaBroadcasterService,
   DeltaCalculatorService,
-  PATTERN_SEGMENT_DELTA,
   Segment,
   SegmentEvaluatorService,
 } from '@drift/shared';
@@ -78,7 +77,7 @@ export class ProcessorService {
       const event: SegmentDeltaEvent = { ...result.event, cascadeDepth };
       this.broadcaster.broadcast(event);
       this.logger.log(
-        `broadcast ${PATTERN_SEGMENT_DELTA} for ${segment.name} (+${result.added.length}/-${result.removed.length}, depth=${cascadeDepth})`,
+        `broadcast delta for ${segment.name} (+${result.added.length}/-${result.removed.length}, depth=${cascadeDepth})`,
       );
       return 'emitted';
     } catch (err) {

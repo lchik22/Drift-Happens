@@ -1,6 +1,6 @@
 import { Controller, Logger } from '@nestjs/common';
 import { Ctx, EventPattern, Payload, RmqContext } from '@nestjs/microservices';
-import { PATTERN_SEGMENT_DELTA } from '@drift/shared';
+import { PATTERN_SEGMENT_DELTA_WS } from '@drift/shared';
 import type { SegmentDeltaEvent } from '@drift/shared';
 import { DeltasGateway } from './deltas.gateway';
 
@@ -10,7 +10,7 @@ export class DeltasController {
 
   constructor(private readonly gateway: DeltasGateway) {}
 
-  @EventPattern(PATTERN_SEGMENT_DELTA)
+  @EventPattern(PATTERN_SEGMENT_DELTA_WS)
   onSegmentDelta(@Payload() event: SegmentDeltaEvent, @Ctx() ctx: RmqContext): void {
     const channel = ctx.getChannelRef();
     const message = ctx.getMessage();

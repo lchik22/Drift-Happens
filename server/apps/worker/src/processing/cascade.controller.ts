@@ -2,7 +2,7 @@ import { Controller, Logger } from '@nestjs/common';
 import { Ctx, EventPattern, Payload, RmqContext } from '@nestjs/microservices';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { PATTERN_SEGMENT_DELTA, Segment, SegmentDependency } from '@drift/shared';
+import { PATTERN_SEGMENT_DELTA_CASCADE, Segment, SegmentDependency } from '@drift/shared';
 import type { SegmentDeltaEvent } from '@drift/shared';
 import { ProcessorService } from './processor.service';
 
@@ -21,7 +21,7 @@ export class CascadeController {
     private readonly processor: ProcessorService,
   ) {}
 
-  @EventPattern(PATTERN_SEGMENT_DELTA)
+  @EventPattern(PATTERN_SEGMENT_DELTA_CASCADE)
   async onSegmentDelta(
     @Payload() event: SegmentDeltaEvent,
     @Ctx() ctx: RmqContext,
